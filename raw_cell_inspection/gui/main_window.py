@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -34,12 +35,14 @@ from raw_cell_inspection.store import (
     KIND_NONSPECIFIC,
     KIND_PREFIX,
     KIND_SPECIFIC,
+    PICKLE_SUFFIX,
     load_document,
     new_document,
     pickle_path_for,
     relpath_or_none,
     save_document,
     signature_mismatch,
+    stack_candidates,
 )
 
 KIND_LABEL = {KIND_SPECIFIC: "Specific", KIND_NONSPECIFIC: "Non-specific"}
@@ -191,6 +194,11 @@ class MainWindow(QtWidgets.QMainWindow):
             r, gg, b = KIND_COLORS[kind]
             btn.setStyleSheet(f"QPushButton:checked {{ background-color: rgb({r},{gg},{b}); color: black; }}")
             draw_row.addWidget(btn)
+        self.import_btn = QtWidgets.QPushButton("Load ROIs from pickle...")
+        self.import_btn.setToolTip(
+            "Copy the ROI outlines from another experiment's pickle onto this stack; "
+            "traces are extracted from this stack"
+        )
         self.keep_drawing = QtWidgets.QCheckBox("Stay in draw mode after each ROI")
         self.show_labels = QtWidgets.QCheckBox("Show ROI names on images")
         self.show_labels.setChecked(True)
@@ -214,6 +222,7 @@ class MainWindow(QtWidgets.QMainWindow):
         hint.setWordWrap(True)
         hint.setStyleSheet("color: gray;")
         rv.addLayout(draw_row)
+        rv.addWidget(self.import_btn)
         rv.addWidget(self.keep_drawing)
         rv.addWidget(self.show_labels)
         rv.addWidget(self.roi_table, 1)
@@ -234,6 +243,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.show_labels.toggled.connect(self._on_labels_toggled)
         self.roi_table.itemSelectionChanged.connect(self._on_table_selection)
         self.roi_table.itemDoubleClicked.connect(lambda _i: self.rename_active())
+        self.import_btn.clicked.connect(lambda: self.import_rois())
         self.rename_btn.clicked.connect(self.rename_active)
         self.delete_btn.clicked.connect(self.delete_active)
         return w
@@ -250,8 +260,12 @@ class MainWindow(QtWidgets.QMainWindow):
     def _build_menus(self) -> None:
         keys = QtGui.QKeySequence.StandardKey
         file_menu = self.menuBar().addMenu("&File")
-        self.open_action = self._action(file_menu, "&Open stack...", self.open_stack, keys.Open)
+        self._action(file_menu, "Open &experiment...", self.open_experiment, "Ctrl+Shift+O")
+        self._action(file_menu, "&Load stack...", self.open_stack, keys.Open)
+        file_menu.addSeparator()
         self.ref_action = self._action(file_menu, "Load &reference image...", self.load_reference)
+        self.import_action = self._action(file_menu, "Load ROIs from &pickle...", self.import_rois)
+        file_menu.addSeparator()
         self.save_action = self._action(file_menu, "&Save", self.save, keys.Save)
         file_menu.addSeparator()
         self._action(file_menu, "&Quit", self.close, keys.Quit)
@@ -275,9 +289,10 @@ class MainWindow(QtWidgets.QMainWindow):
             self.fps_spin, self.units_combo, self.draw_source, self.load_ref_btn, self.draw_display,
             self.stack_source, self.stack_display, self.draw_specific_btn, self.draw_nonspecific_btn,
             self.roi_table, self.rename_btn, self.delete_btn, self.frame_slider, self.frame_spin,
+            self.import_btn,
         ):
             w.setEnabled(on)
-        for a in (self.ref_action, self.save_action, self.heatmap_action):
+        for a in (self.ref_action, self.import_action, self.save_action, self.heatmap_action):
             a.setEnabled(on)
 
     # dirty / title -------------------------------------------------------------
@@ -310,40 +325,83 @@ class MainWindow(QtWidgets.QMainWindow):
         else:
             ev.ignore()
 
-    # opening a stack ---------------------------------------------------------
-    def open_stack(self, path: str | None = None) -> None:
+    # opening an experiment / a stack ------------------------------------------
+    def _ask_stack_path(self, title: str, start: str) -> Path | None:
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, title, start, f"TIFF stacks ({_file_filter(TIF_SUFFIXES)})"
+        )
+        return Path(path) if path else None
+
+    def open_experiment(self, pkl_path: str | None = None) -> None:
+        """Open an experiment pickle and the stack it belongs to."""
         if not self._confirm_discard():
             return
-        if not path:
+        if not pkl_path:
             start = self.settings.value("last_dir", "")
-            path, _ = QtWidgets.QFileDialog.getOpenFileName(
-                self, "Open movie stack", start, f"TIFF stacks ({_file_filter(TIF_SUFFIXES)})"
+            pkl_path, _ = QtWidgets.QFileDialog.getOpenFileName(
+                self, "Open experiment", start, f"Raw Cell Inspection files (*{PICKLE_SUFFIX});;Pickle files (*.pkl)"
             )
-            if not path:
+            if not pkl_path:
+                return
+        pkl_path = Path(pkl_path)
+        self.settings.setValue("last_dir", str(pkl_path.parent))
+        try:
+            doc = load_document(pkl_path)
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, "Open experiment", f"Could not read {pkl_path.name}:\n{exc}")
+            return
+        stack_path = next((p for p in stack_candidates(pkl_path, doc) if p.exists()), None)
+        if stack_path is None:
+            name = doc["stack"].get("filename", "the stack")
+            QtWidgets.QMessageBox.information(
+                self,
+                "Locate stack",
+                f"{name} was not found next to {pkl_path.name}. Please locate the stack of this experiment.",
+            )
+            stack_path = self._ask_stack_path(f"Locate {name}", str(pkl_path.parent))
+            if stack_path is None:
+                return
+        self.open_stack(str(stack_path), pkl_path=pkl_path, doc=doc, confirm=False)
+
+    def open_stack(
+        self,
+        path: str | None = None,
+        pkl_path: Path | None = None,
+        doc: dict | None = None,
+        confirm: bool = True,
+    ) -> None:
+        """Load a stack together with its experiment pickle.
+
+        Without pkl_path the pickle is <stack>_rci.pkl next to the stack (created on first save).
+        """
+        if confirm and not self._confirm_discard():
+            return
+        if not path:
+            path = self._ask_stack_path("Load stack", self.settings.value("last_dir", ""))
+            if path is None:
                 return
         path = Path(path)
+        pkl = Path(pkl_path) if pkl_path else pickle_path_for(path)
         self.settings.setValue("last_dir", str(path.parent))
 
         def load(_progress):
             stack = load_stack(path)
             signature = stack_signature(path, stack)
-            pkl = pickle_path_for(path)
-            doc, doc_error = None, None
-            if pkl.exists():
+            loaded_doc, doc_error = doc, None
+            if loaded_doc is None and pkl.exists():
                 try:
-                    doc = load_document(pkl)
+                    loaded_doc = load_document(pkl)
                 except Exception as exc:
                     doc_error = str(exc)
-            return stack, signature, doc, doc_error
+            return stack, signature, loaded_doc, doc_error
 
         def loaded(result):
-            stack, signature, doc, doc_error = result
-            self._after_load(path, stack, signature, doc, doc_error)
+            stack, signature, loaded_doc, doc_error = result
+            self._after_load(path, stack, signature, loaded_doc, doc_error, pkl)
 
         run_task(self, f"Opening {path.name}...", load, loaded, cancellable=False)
 
-    def _after_load(self, path, stack, signature, doc, doc_error) -> None:
-        pkl = pickle_path_for(path)
+    def _after_load(self, path, stack, signature, doc, doc_error, pkl: Path) -> None:
         recompute_traces = False
         if doc_error:
             QtWidgets.QMessageBox.warning(
@@ -395,17 +453,17 @@ class MainWindow(QtWidgets.QMainWindow):
 
             def computed(summary):
                 doc["summary"] = summary
-                self._install(path, stack, doc, dirty=recompute_traces)
+                self._install(path, stack, doc, pkl, dirty=recompute_traces)
 
             run_task(self, "Computing mean image and field-of-view trace...", compute, computed)
         else:
-            self._install(path, stack, doc, dirty=False)
+            self._install(path, stack, doc, pkl, dirty=False)
 
-    def _install(self, path: Path, stack: np.ndarray, doc: dict, dirty: bool) -> None:
+    def _install(self, path: Path, stack: np.ndarray, doc: dict, pkl: Path, dirty: bool) -> None:
         self.stack_path = path
         self.stack = stack
         self.doc = doc
-        self.pkl_path = pickle_path_for(path)
+        self.pkl_path = pkl
         self.dirty = dirty
         self.selected = {KIND_SPECIFIC: None, KIND_NONSPECIFIC: None}
         self.active_id = None
@@ -418,8 +476,9 @@ class MainWindow(QtWidgets.QMainWindow):
         h, w = stack.shape[1:]
         self.stack_label.setText(
             f"<b>{path.name}</b><br>{n} frames, {w} x {h} px, {stack.dtype}<br>"
-            f"ROI file: {self.pkl_path.name}{'' if self.pkl_path.exists() else ' (new)'}"
+            f"Experiment file: {self.pkl_path.name}{'' if self.pkl_path.exists() else ' (new)'}"
         )
+        self.stack_label.setToolTip(f"Stack: {path}\nExperiment file: {self.pkl_path}")
         for wdg in (self.frame_slider, self.frame_spin):
             wdg.blockSignals(True)
             wdg.setRange(0, n - 1)
@@ -468,6 +527,8 @@ class MainWindow(QtWidgets.QMainWindow):
             "draw": self.draw_display.state(),
             "stack": self.stack_display.state(),
         }
+        self.doc["stack"]["path"] = str(self.stack_path.resolve())
+        self.doc["stack"]["relpath"] = relpath_or_none(self.stack_path, self.pkl_path.parent)
         try:
             save_document(self.pkl_path, self.doc)
         except OSError as exc:
@@ -542,26 +603,36 @@ class MainWindow(QtWidgets.QMainWindow):
             return doc["reference_image"]["image"]
         if key in ("mean", "max"):
             return doc["summary"][f"{key}_image"]
-        if key and key.startswith("heatmap:"):
-            name = key.split(":", 1)[1]
-            for hm in doc["heatmaps"]:
-                if hm["name"] == name:
-                    return hm.get("image")
-        return None
+        heatmap = self._heatmap_for_key(key)
+        return heatmap.get("image") if heatmap else None
+
+    def _heatmap_for_key(self, key: str | None) -> dict | None:
+        if not key or not key.startswith("heatmap:"):
+            return None
+        name = key.split(":", 1)[1]
+        return next((hm for hm in self.doc["heatmaps"] if hm["name"] == name), None)
 
     def _on_draw_source_changed(self, keep_if_same: bool = False) -> None:
         if self.doc is None:
             return
-        image = self._draw_source_image(self.draw_source.currentData())
+        key = self.draw_source.currentData()
+        heatmap = self._heatmap_for_key(key)
+        self.trace_panel.set_ranges(heatmap.get("computed_ranges") if heatmap else None)
+        self.draw_panel.set_title(f"Draw view - {self.draw_source.currentText()}", self._draw_source_path(key))
+        self.doc.setdefault("display", {})["draw_source"] = key
+        image = self._draw_source_image(key)
         if keep_if_same and image is self.draw_panel.image:
             return
         self.draw_panel.set_image(image)
         if image is not None:
             self.draw_display.set_data_range(image)
         self._apply_display(self.draw_panel, self.draw_display)
-        self.draw_panel.set_title(f"Draw view - {self.draw_source.currentText()}")
-        if self.doc is not None:
-            self.doc.setdefault("display", {})["draw_source"] = self.draw_source.currentData()
+
+    def _draw_source_path(self, key: str | None) -> str:
+        ref = self.doc.get("reference_image")
+        if key == "reference" and ref:
+            return ref["source_path"]
+        return str(self.stack_path) if self.stack_path else ""
 
     def _on_stack_source_changed(self) -> None:
         if self.stack is None:
@@ -583,7 +654,7 @@ class MainWindow(QtWidgets.QMainWindow):
             title = f"Stack view - {self.stack_source.currentText()}"
         self.stack_panel.set_image(image, levels=self.stack_display.levels())
         self._apply_display(self.stack_panel, self.stack_display)
-        self.stack_panel.set_title(title)
+        self.stack_panel.set_title(title, str(self.stack_path))
 
     def _apply_display(self, panel: ImagePanel, controls: DisplayControls) -> None:
         panel.set_lut(controls.lut_name())
@@ -846,6 +917,119 @@ class MainWindow(QtWidgets.QMainWindow):
         self._set_active(None)
         self.mark_dirty()
         self._refresh_rois()
+
+    def import_rois(self, path: str | None = None, mode: str | None = None) -> None:
+        """Copy ROI outlines from another experiment's pickle; masks and traces come from this stack.
+
+        mode: "add" or "replace" existing ROIs (asked when None and ROIs exist).
+        """
+        if self.doc is None:
+            return
+        if not path:
+            path, _ = QtWidgets.QFileDialog.getOpenFileName(
+                self, "Load ROIs from pickle", self.settings.value("last_roi_dir", ""),
+                f"Raw Cell Inspection files (*{PICKLE_SUFFIX});;Pickle files (*.pkl)",
+            )
+            if not path:
+                return
+        path = Path(path)
+        self.settings.setValue("last_roi_dir", str(path.parent))
+        if self.pkl_path is not None and path.resolve() == self.pkl_path.resolve():
+            QtWidgets.QMessageBox.information(self, "Load ROIs", "That is this experiment's own file.")
+            return
+        try:
+            source = load_document(path)
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, "Load ROIs", f"Could not read {path.name}:\n{exc}")
+            return
+        src_rois = source.get("rois", [])
+        if not src_rois:
+            QtWidgets.QMessageBox.information(self, "Load ROIs", f"{path.name} contains no ROIs.")
+            return
+
+        h, w = self.stack.shape[1:]
+        src_shape = tuple(source.get("stack", {}).get("shape", ()))[1:]
+        if src_shape and src_shape != (h, w) and mode is None:
+            answer = QtWidgets.QMessageBox.question(
+                self,
+                "Different image size",
+                f"The ROIs were drawn on {src_shape[1]} x {src_shape[0]} px images, this stack is "
+                f"{w} x {h} px. Import anyway? ROIs are placed at the same pixel coordinates and "
+                "clipped at the image border.",
+            )
+            if answer != QtWidgets.QMessageBox.StandardButton.Yes:
+                return
+
+        if mode is None and self.doc["rois"]:
+            box = QtWidgets.QMessageBox(self)
+            box.setWindowTitle("Load ROIs")
+            box.setText(f"This experiment already has {len(self.doc['rois'])} ROI(s).")
+            add = box.addButton("Add to them", QtWidgets.QMessageBox.ButtonRole.AcceptRole)
+            replace = box.addButton("Replace them", QtWidgets.QMessageBox.ButtonRole.DestructiveRole)
+            box.addButton(QtWidgets.QMessageBox.StandardButton.Cancel)
+            box.exec()
+            clicked = box.clickedButton()
+            mode = "add" if clicked is add else "replace" if clicked is replace else None
+            if mode is None:
+                return
+        if mode == "replace":
+            self.doc["rois"] = []
+            self.doc["next_roi_number"] = {KIND_SPECIFIC: 1, KIND_NONSPECIFIC: 1}
+            self.selected = {KIND_SPECIFIC: None, KIND_NONSPECIFIC: None}
+            self._set_active(None)
+
+        QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.CursorShape.WaitCursor)
+        try:
+            added, skipped = self._add_imported_rois(src_rois, path)
+        finally:
+            QtWidgets.QApplication.restoreOverrideCursor()
+        self.mark_dirty()
+        self._refresh_rois()
+        message = f"Loaded {added} ROI(s) from {path.name}"
+        if skipped:
+            message += f"; {skipped} skipped (no pixels inside this image)"
+        self.statusBar().showMessage(message, 8000)
+
+    def _add_imported_rois(self, src_rois: list[dict], source_path: Path) -> tuple[int, int]:
+        rois = self.doc["rois"]
+        numbers = self.doc["next_roi_number"]
+        names = {r["name"] for r in rois}
+        next_id = max((r["id"] for r in rois), default=0) + 1
+        now = datetime.now().isoformat(timespec="seconds")
+        added = skipped = 0
+        for src in src_rois:
+            kind = src.get("kind", KIND_SPECIFIC)
+            if kind not in KIND_PREFIX:
+                kind = KIND_SPECIFIC
+            vertices, mask = self._roi_geometry(np.asarray(src["vertices"], dtype=float))
+            if mask is None:
+                skipped += 1
+                continue
+            name = src.get("name") or ""
+            match = re.fullmatch(rf"{KIND_PREFIX[kind]}(\d+)", name)
+            if match:
+                numbers[kind] = max(numbers[kind], int(match.group(1)) + 1)
+            if not name or name in names:
+                while f"{KIND_PREFIX[kind]}{numbers[kind]}" in names:
+                    numbers[kind] += 1
+                name = f"{KIND_PREFIX[kind]}{numbers[kind]}"
+                numbers[kind] += 1
+            names.add(name)
+            rois.append({
+                "id": next_id,
+                "name": name,
+                "kind": kind,
+                "vertices": vertices,
+                "mask": mask,
+                "n_pixels": int(mask["mask"].sum()),
+                "trace": roi_trace(self.stack, mask),
+                "created": now,
+                "modified": now,
+                "imported_from": {"path": str(source_path.resolve()), "name": src.get("name")},
+            })
+            next_id += 1
+            added += 1
+        return added, skipped
 
     # heatmaps ----------------------------------------------------------------
     def open_heatmaps(self) -> None:

@@ -67,6 +67,18 @@ Opening rules:
 - Same width × height but frames / size changed → ROIs kept; summary, all traces recomputed; heatmaps reset to "not computed" (ranges clipped to the new length).
 - Different width × height → the pickle is not loaded (it survives as `.bak` if you save).
 
+## Session 2026-09-25 — Experiments, ROI import, view paths, heatmap ranges (v0.2)
+
+| ID | Agreement |
+|----|-----------|
+| B1 | **File → Open experiment...** opens a `*_rci.pkl` and its stack. The stack is looked for at `stack.relpath` (relative to the pickle), then `stack.filename` next to the pickle, then the absolute `stack.path` hint; if none exists the user locates it. The opened pickle stays the experiment's file (saves go back to it), even if the stack lives elsewhere or has another name. |
+| B2 | **File → Load stack...** is the former *Open stack*: stack + its `<stack>_rci.pkl`. |
+| B3 | **Load ROIs from pickle...** (button under the draw buttons, also in File) copies `vertices`, `kind` and `name` from another experiment's ROIs. Masks and traces are rebuilt on the current stack at the same pixel coordinates (clipped to the image; ROIs left without pixels are skipped). A size mismatch asks first. With existing ROIs: add or replace. Names are kept unless they clash, then the next free `S#` / `N#` is used, and the name counters move past imported numbers. Each imported ROI records `imported_from` = {`path`, `name`}. |
+| B4 | Each view shows the full path of its file under the title (elided in the middle, full path as tooltip): reference image path, or the stack path for stack mean / max / heatmaps and the stack view. |
+| B5 | While a heatmap is the draw-view source, its `computed_ranges` (the ranges actually used for the map) are drawn as read-only yellow bands on both trace plots, same style as in the heatmap window. |
+
+Schema stays **v1**; additions are optional keys: `stack.path`, `stack.relpath` (written on save), ROI `imported_from`.
+
 ### Parked / next
 - Trace-processing window (smoothing, bleach correction, ΔF/F, comparison of specific vs non-specific).
 - Possible pairing of specific ↔ non-specific ROIs, if the comparison needs it.

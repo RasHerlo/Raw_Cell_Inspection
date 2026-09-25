@@ -108,6 +108,30 @@ def _polygon_path(vertices: np.ndarray) -> QtGui.QPainterPath:
     return path
 
 
+class ElidedLabel(QtWidgets.QLabel):
+    """Single-line label that shortens long text (e.g. paths) in the middle; full text in the tooltip."""
+
+    def __init__(self, text: str = "", parent=None):
+        super().__init__(parent)
+        self._full = ""
+        self.setMinimumWidth(10)
+        self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored, QtWidgets.QSizePolicy.Policy.Preferred)
+        self.set_full_text(text)
+
+    def set_full_text(self, text: str) -> None:
+        self._full = text
+        self.setToolTip(text)
+        self._elide()
+
+    def resizeEvent(self, ev) -> None:
+        super().resizeEvent(ev)
+        self._elide()
+
+    def _elide(self) -> None:
+        width = max(10, self.width() - 8)
+        self.setText(self.fontMetrics().elidedText(self._full, QtCore.Qt.TextElideMode.ElideMiddle, width))
+
+
 class ImagePanel(QtWidgets.QWidget):
     """A titled image view showing ROI outlines. Optionally hosts the editable active ROI."""
 
@@ -119,7 +143,10 @@ class ImagePanel(QtWidgets.QWidget):
     def __init__(self, title: str, parent=None):
         super().__init__(parent)
         self.title = QtWidgets.QLabel(title)
-        self.title.setStyleSheet("font-weight: bold; padding: 2px;")
+        self.title.setStyleSheet("font-weight: bold; padding: 2px 2px 0px 2px;")
+        self.path_label = ElidedLabel()
+        self.path_label.setStyleSheet("color: #606060; padding: 0px 2px 2px 2px;")
+        self.path_label.setTextInteractionFlags(QtCore.Qt.TextInteractionFlag.TextSelectableByMouse)
         self.glw = pg.GraphicsLayoutWidget()
         self.vb = DrawViewBox(lockAspect=True, invertY=True, enableMenu=True)
         self.glw.addItem(self.vb)
@@ -131,6 +158,7 @@ class ImagePanel(QtWidgets.QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
         layout.addWidget(self.title)
+        layout.addWidget(self.path_label)
         layout.addWidget(self.glw, 1)
 
         self._overlay_items: list[QtWidgets.QGraphicsItem] = []
@@ -143,8 +171,9 @@ class ImagePanel(QtWidgets.QWidget):
         self.glw.scene().sigMouseMoved.connect(self._on_mouse_moved)
 
     # image -----------------------------------------------------------------
-    def set_title(self, text: str) -> None:
+    def set_title(self, text: str, path: str = "") -> None:
         self.title.setText(text)
+        self.path_label.set_full_text(path)
 
     def set_image(self, image: np.ndarray | None, levels: tuple[float, float] | None = None) -> None:
         first = self._image is None or (image is not None and image.shape != self._image.shape)

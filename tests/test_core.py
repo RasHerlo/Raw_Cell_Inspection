@@ -2,7 +2,22 @@ import numpy as np
 
 from raw_cell_inspection.analysis import frames_in_ranges, range_ratio_heatmap, stack_summary
 from raw_cell_inspection.masks import polygon_mask, roi_trace, simplify_stroke
-from raw_cell_inspection.store import load_document, new_document, save_document, signature_mismatch
+from raw_cell_inspection.store import (
+    load_document,
+    new_document,
+    save_document,
+    signature_mismatch,
+    stack_candidates,
+)
+
+
+def test_stack_candidates_prefer_relpath(tmp_path):
+    doc = new_document({"filename": "a.tif", "relpath": "../raw/a.tif", "path": "D:/x/a.tif"})
+    pkl = tmp_path / "exp" / "a_rci.pkl"
+    cands = stack_candidates(pkl, doc)
+    assert cands[0] == tmp_path / "exp" / "../raw/a.tif"
+    assert cands[1] == tmp_path / "exp" / "a.tif"
+    assert str(cands[2]).replace("\\", "/") == "D:/x/a.tif"
 
 
 def test_square_mask_covers_pixel_centres():

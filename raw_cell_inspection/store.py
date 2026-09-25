@@ -91,6 +91,20 @@ def signature_mismatch(stored: dict, current: dict) -> list[str]:
     return problems
 
 
+def stack_candidates(pkl_path: str | os.PathLike, doc: dict) -> list[Path]:
+    """Where to look for an experiment's stack, relative to its pickle first."""
+    folder = Path(pkl_path).parent
+    info = doc.get("stack", {})
+    out = []
+    if info.get("relpath"):
+        out.append(folder / info["relpath"])
+    if info.get("filename"):
+        out.append(folder / info["filename"])
+    if info.get("path"):
+        out.append(Path(info["path"]))
+    return out
+
+
 def relpath_or_none(target: str | os.PathLike, start: str | os.PathLike) -> str | None:
     try:
         return os.path.relpath(target, start)

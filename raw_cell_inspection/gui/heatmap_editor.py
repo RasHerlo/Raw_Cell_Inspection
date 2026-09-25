@@ -10,13 +10,10 @@ from PySide6 import QtCore, QtWidgets
 
 from raw_cell_inspection.analysis import range_ratio_heatmap
 from raw_cell_inspection.gui.tasks import run_task
-from raw_cell_inspection.gui.trace_panel import apply_time_axis
+from raw_cell_inspection.gui.trace_panel import REGION_BRUSH, REGION_HOVER, REGION_PEN, apply_time_axis
 
 if TYPE_CHECKING:
     from raw_cell_inspection.gui.main_window import MainWindow
-
-REGION_BRUSH = (255, 200, 0, 50)
-REGION_HOVER = (255, 200, 0, 90)
 
 
 def new_heatmap(name: str) -> dict:
@@ -166,6 +163,7 @@ class HeatmapEditor(QtWidgets.QWidget):
                 values=(start, end),
                 brush=pg.mkBrush(*REGION_BRUSH),
                 hoverBrush=pg.mkBrush(*REGION_HOVER),
+                pen=pg.mkPen(REGION_PEN),
                 bounds=(0, self.n_frames - 1),
             )
             region.sigRegionChangeFinished.connect(lambda r, i=i: self._on_region_changed(i, r))

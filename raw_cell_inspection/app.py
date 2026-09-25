@@ -19,7 +19,10 @@ def main(argv: list[str] | None = None) -> int:
     window = MainWindow()
     window.show()
     if len(argv) > 1:
-        window.open_stack(argv[1])
+        if argv[1].lower().endswith(".pkl"):
+            window.open_experiment(argv[1])
+        else:
+            window.open_stack(argv[1])
     return app.exec()
 
 

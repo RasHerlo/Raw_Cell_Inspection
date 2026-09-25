@@ -10,6 +10,9 @@ from raw_cell_inspection.gui.image_panel import KIND_COLORS
 from raw_cell_inspection.store import KIND_NONSPECIFIC, KIND_SPECIFIC
 
 CURSOR_PEN = pg.mkPen((255, 230, 80), width=1.5)
+REGION_BRUSH = (255, 200, 0, 50)
+REGION_HOVER = (255, 200, 0, 90)
+REGION_PEN = (255, 200, 0)
 
 
 def apply_time_axis(plot: pg.PlotItem, fps: float | None, units: str) -> None:
@@ -50,6 +53,7 @@ class TracePanel(QtWidgets.QWidget):
             self.cursors[kind] = cursor
         self.plots[KIND_NONSPECIFIC].setXLink(self.plots[KIND_SPECIFIC])
         self.glw.scene().sigMouseClicked.connect(self._on_scene_clicked)
+        self._range_items: list[tuple[pg.PlotItem, pg.LinearRegionItem]] = []
         self._frame = 0
         self._n_frames = 1
         self._syncing = False
@@ -72,6 +76,23 @@ class TracePanel(QtWidgets.QWidget):
         self.curves[kind].setData(np.arange(len(trace)), trace)
         plot.setTitle(f"{label}: {name}")
         plot.enableAutoRange(axis="y")
+
+    def set_ranges(self, ranges: list | None) -> None:
+        """Show read-only frame ranges (e.g. those a heatmap was computed from) on both plots."""
+        for plot, item in self._range_items:
+            plot.removeItem(item)
+        self._range_items = []
+        for start, end in ranges or []:
+            for plot in self.plots.values():
+                item = pg.LinearRegionItem(
+                    values=(start, end),
+                    movable=False,
+                    brush=pg.mkBrush(*REGION_BRUSH),
+                    pen=pg.mkPen(REGION_PEN),
+                )
+                item.setZValue(-10)
+                plot.addItem(item, ignoreBounds=True)
+                self._range_items.append((plot, item))
 
     def set_time_axis(self, fps: float | None, units: str) -> None:
         for plot in self.plots.values():

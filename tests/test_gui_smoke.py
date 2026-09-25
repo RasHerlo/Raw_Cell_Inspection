@@ -81,13 +81,44 @@ def test_full_cycle(app, tmp_path):
     assert len(doc["rois"]) == 2 and doc["fps"] == 10.0
     assert doc["heatmaps"][0]["computed_ranges"] == [[20, 29]]
 
+    # heatmap ranges are shown on both trace plots while the heatmap is the draw source
+    assert len(win.trace_panel._range_items) == 2
+    assert win.draw_panel.path_label.toolTip() == str(path)
+    assert win.stack_panel.path_label.toolTip() == str(path)
+    win.draw_source.setCurrentIndex(win.draw_source.findData("mean"))
+    assert win.trace_panel._range_items == []
+
+    # File > Open experiment, via the pickle
     win2 = MainWindow()
-    win2.open_stack(str(path))
+    win2.open_experiment(str(tmp_path / "rec_rci.pkl"))
     wait_until(app, lambda: win2.doc is not None and win2.stack is not None)
     assert len(win2.doc["rois"]) == 2
+    assert win2.pkl_path == tmp_path / "rec_rci.pkl"
     assert win2.draw_source.currentData() == "heatmap:stim"
+    assert len(win2.trace_panel._range_items) == 2
     win2._on_image_clicked(25, 25)
     assert win2.selected[KIND_NONSPECIFIC] == doc["rois"][1]["id"]
-    win.dirty = win2.dirty = False
-    win.close()
-    win2.close()
+
+    # Load ROIs from pickle onto another experiment's stack
+    other_dir = tmp_path / "other"
+    other_dir.mkdir()
+    other = np.full((n, s, s), 50, dtype=np.uint16)
+    other[:, 18:22, 18:22] = 70
+    tifffile.imwrite(other_dir / "rec2.tif", other)
+    win3 = MainWindow()
+    win3.open_stack(str(other_dir / "rec2.tif"))
+    wait_until(app, lambda: win3.doc is not None and win3.stack is not None)
+    win3.draw_specific_btn.setChecked(True)
+    win3.draw_panel.sigLassoFinished.emit(square(5, 5, 2))  # takes the name S1
+    win3.import_rois(str(tmp_path / "rec_rci.pkl"), mode="add")
+    rois3 = win3.doc["rois"]
+    assert [r["name"] for r in rois3] == ["S1", "S2", "N1"]
+    assert rois3[1]["trace"][0] == pytest.approx(70)  # traces come from the new stack
+    np.testing.assert_allclose(rois3[1]["vertices"], doc["rois"][0]["vertices"])
+    assert win3.doc["next_roi_number"][KIND_SPECIFIC] == 3
+    win3.import_rois(str(tmp_path / "rec_rci.pkl"), mode="replace")
+    assert [r["name"] for r in win3.doc["rois"]] == ["S1", "N1"]
+
+    for wdw in (win, win2, win3):
+        wdw.dirty = False
+        wdw.close()
