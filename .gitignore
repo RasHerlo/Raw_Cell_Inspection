@@ -216,3 +216,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Raw Cell Inspection
+venv_rci/
+demo_data/
+!packaging/*.spec
+
