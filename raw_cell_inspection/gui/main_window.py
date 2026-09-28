@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 from datetime import datetime
 from pathlib import Path
@@ -12,9 +13,10 @@ from PySide6 import QtCore, QtGui, QtWidgets
 from raw_cell_inspection import __version__
 from raw_cell_inspection.analysis import stack_summary
 from raw_cell_inspection.gui.heatmap_editor import HeatmapEditor, heatmap_state
+from raw_cell_inspection.gui.trace_processing_window import TraceProcessingWindow
 from raw_cell_inspection.gui.image_panel import KIND_COLORS, DisplayControls, ImagePanel
 from raw_cell_inspection.gui.tasks import run_task
-from raw_cell_inspection.gui.trace_panel import TracePanel
+from raw_cell_inspection.gui.trace_panel import TracePanel, annotation_spans
 from raw_cell_inspection.masks import (
     clip_vertices,
     contains_point,
@@ -53,6 +55,43 @@ def _file_filter(suffixes) -> str:
     return " ".join(f"*{s}" for s in suffixes)
 
 
+def dialog_start(settings, *keys: str) -> str:
+    """Path for a file dialog: the last file if it is still there, otherwise its folder.
+
+    A directory is returned with a trailing separator so the dialog opens that
+    folder instead of treating the last component as a file name.
+    """
+    for key in keys:
+        raw = settings.value(key, "")
+        text = raw if isinstance(raw, str) else ""
+        if not text:
+            continue
+        path = Path(text)
+        if path.is_file():
+            return str(path)
+        if path.is_dir():
+            return os.path.join(str(path), "")
+        if path.parent.is_dir():
+            return os.path.join(str(path.parent), "")
+    return ""
+
+
+def remember_opened(settings, *, stack: Path | None = None, experiment: Path | None = None) -> None:
+    """Remember the last experiment so the next open dialog starts there.
+
+    Stored with QSettings, which the shipped app keeps per user (the registry
+    on Windows), independent of where the program is installed.
+    """
+    if experiment is not None:
+        settings.setValue("last_experiment", str(experiment))
+    if stack is not None:
+        settings.setValue("last_stack", str(stack))
+    folder = experiment.parent if experiment is not None else (stack.parent if stack is not None else None)
+    if folder is not None:
+        settings.setValue("last_dir", str(folder))
+    settings.sync()
+
+
 class MainWindow(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
@@ -70,6 +109,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.draw_kind: str | None = None
         self._frame_sample: np.ndarray | None = None
         self.heatmap_editor: HeatmapEditor | None = None
+        self.trace_window: TraceProcessingWindow | None = None
 
         self._build_ui()
         self._build_menus()
@@ -136,6 +176,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.draw_panel.sigHover.connect(lambda p: self._on_hover(self.draw_panel, p))
         self.stack_panel.sigHover.connect(lambda p: self._on_hover(self.stack_panel, p))
         self.trace_panel.sigFrameChanged.connect(self.set_frame)
+        self.trace_panel.sigAnnotationToggled.connect(self.set_annotation_shown)
         self.frame_slider.valueChanged.connect(self.set_frame)
         self.frame_spin.valueChanged.connect(self.set_frame)
 
@@ -274,9 +315,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._action(view_menu, "Reset zoom", self._reset_zoom, "Ctrl+0")
 
         tools = self.menuBar().addMenu("&Tools")
-        self.heatmap_action = self._action(tools, "&Heatmaps...", self.open_heatmaps, "Ctrl+H")
-        self.trace_action = self._action(tools, "Trace processing... (next iteration)")
-        self.trace_action.setEnabled(False)
+        self.heatmap_action = self._action(tools, "&Annotations...", self.open_heatmaps, "Ctrl+H")
+        self.trace_action = self._action(tools, "&Trace processing...", self.open_trace_processing, "Ctrl+T")
 
         help_menu = self.menuBar().addMenu("&Help")
         self._action(help_menu, "About", self._about)
@@ -292,7 +332,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.import_btn,
         ):
             w.setEnabled(on)
-        for a in (self.ref_action, self.import_action, self.save_action, self.heatmap_action):
+        for a in (self.ref_action, self.import_action, self.save_action, self.heatmap_action, self.trace_action):
             a.setEnabled(on)
 
     # dirty / title -------------------------------------------------------------
@@ -337,14 +377,14 @@ class MainWindow(QtWidgets.QMainWindow):
         if not self._confirm_discard():
             return
         if not pkl_path:
-            start = self.settings.value("last_dir", "")
+            start = dialog_start(self.settings, "last_experiment", "last_dir")
             pkl_path, _ = QtWidgets.QFileDialog.getOpenFileName(
                 self, "Open experiment", start, f"Raw Cell Inspection files (*{PICKLE_SUFFIX});;Pickle files (*.pkl)"
             )
             if not pkl_path:
                 return
         pkl_path = Path(pkl_path)
-        self.settings.setValue("last_dir", str(pkl_path.parent))
+        remember_opened(self.settings, experiment=pkl_path)
         try:
             doc = load_document(pkl_path)
         except Exception as exc:
@@ -377,12 +417,12 @@ class MainWindow(QtWidgets.QMainWindow):
         if confirm and not self._confirm_discard():
             return
         if not path:
-            path = self._ask_stack_path("Load stack", self.settings.value("last_dir", ""))
+            path = self._ask_stack_path("Load stack", dialog_start(self.settings, "last_stack", "last_dir"))
             if path is None:
                 return
         path = Path(path)
         pkl = Path(pkl_path) if pkl_path else pickle_path_for(path)
-        self.settings.setValue("last_dir", str(path.parent))
+        remember_opened(self.settings, stack=path, experiment=pkl)
 
         def load(_progress):
             stack = load_stack(path)
@@ -512,6 +552,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self._update_title()
         if self.heatmap_editor is not None:
             self.heatmap_editor.refresh()
+        if self.trace_window is not None:
+            self.trace_window.refresh()
+        self.refresh_annotation_overlays()
         n_rois = len(doc["rois"])
         self.statusBar().showMessage(
             f"Loaded {path.name}" + (f" with {n_rois} saved ROI(s)" if n_rois else ""), 6000
@@ -521,11 +564,13 @@ class MainWindow(QtWidgets.QMainWindow):
     def save(self) -> bool:
         if self.doc is None or self.pkl_path is None:
             return False
+        previous = self.doc.get("display") or {}
         self.doc["display"] = {
             "draw_source": self.draw_source.currentData(),
             "stack_source": self.stack_source.currentData(),
             "draw": self.draw_display.state(),
             "stack": self.stack_display.state(),
+            "shown_annotations": list(previous.get("shown_annotations") or []),
         }
         self.doc["stack"]["path"] = str(self.stack_path.resolve())
         self.doc["stack"]["relpath"] = relpath_or_none(self.stack_path, self.pkl_path.parent)
@@ -616,8 +661,6 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.doc is None:
             return
         key = self.draw_source.currentData()
-        heatmap = self._heatmap_for_key(key)
-        self.trace_panel.set_ranges(heatmap.get("computed_ranges") if heatmap else None)
         self.draw_panel.set_title(f"Draw view - {self.draw_source.currentText()}", self._draw_source_path(key))
         self.doc.setdefault("display", {})["draw_source"] = key
         image = self._draw_source_image(key)
@@ -701,6 +744,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.trace_panel.set_time_axis(self.doc.get("fps"), self.doc.get("x_units", "frames"))
         if self.heatmap_editor is not None:
             self.heatmap_editor.apply_time_axis()
+        if self.trace_window is not None:
+            self.trace_window.apply_time_axis()
         self._update_frame_label()
 
     def _update_frame_label(self) -> None:
@@ -865,6 +910,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.trace_panel.set_trace(kind, roi["name"] if roi else None, roi["trace"] if roi else None)
         self.rename_btn.setEnabled(self.active_id is not None)
         self.delete_btn.setEnabled(self.active_id is not None)
+        if self.trace_window is not None and self.trace_window.isVisible():
+            self.trace_window.on_rois_changed()
 
     def _refresh_table(self) -> None:
         rois = self.doc["rois"] if self.doc else []
@@ -1042,9 +1089,49 @@ class MainWindow(QtWidgets.QMainWindow):
         self.heatmap_editor.raise_()
         self.heatmap_editor.activateWindow()
 
+    def open_trace_processing(self) -> None:
+        if self.doc is None:
+            return
+        if self.trace_window is None:
+            self.trace_window = TraceProcessingWindow(self)
+        self.trace_window.refresh()
+        self.trace_window.show()
+        self.trace_window.raise_()
+        self.trace_window.activateWindow()
+
     def on_heatmaps_edited(self) -> None:
         self.mark_dirty()
         self._refresh_draw_sources()
+        self.refresh_annotation_overlays()
+
+    def annotation_choices(self) -> list[tuple[str, bool]]:
+        if self.doc is None:
+            return []
+        shown = set((self.doc.get("display") or {}).get("shown_annotations") or [])
+        return [(hm["name"], hm["name"] in shown) for hm in self.doc.get("heatmaps") or []]
+
+    def set_annotation_shown(self, name: str, shown: bool) -> None:
+        if self.doc is None:
+            return
+        display = self.doc.setdefault("display", {})
+        names = [str(item) for item in (display.get("shown_annotations") or [])]
+        if shown and name not in names:
+            names.append(name)
+        elif not shown and name in names:
+            names.remove(name)
+        else:
+            return
+        display["shown_annotations"] = names
+        self.mark_dirty()
+        self.refresh_annotation_overlays()
+
+    def refresh_annotation_overlays(self) -> None:
+        if self.doc is None:
+            return
+        self.trace_panel.set_annotation_choices(self.annotation_choices())
+        self.trace_panel.set_annotation_spans(annotation_spans(self.doc))
+        if self.trace_window is not None:
+            self.trace_window.sync_annotations()
 
     def on_heatmap_computed(self, name: str) -> None:
         self.mark_dirty()

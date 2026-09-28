@@ -41,6 +41,7 @@ def new_document(signature: dict) -> dict:
         "rois": [],
         "next_roi_number": {KIND_SPECIFIC: 1, KIND_NONSPECIFIC: 1},
         "heatmaps": [],
+        "annotations": [],  # {'name', 'ranges': [[start, end], ...]} onset = first frame
         "display": {},
         "trace_processing": {},
     }
@@ -63,6 +64,19 @@ def _upgrade(doc: dict) -> dict:
     template = new_document(doc.get("stack", {}))
     for key, value in template.items():
         doc.setdefault(key, value)
+    # Categories are the annotations. Older trace-processing files kept a separate list.
+    heatmaps = doc["heatmaps"]
+    for ann in doc.get("annotations") or []:
+        name = str(ann.get("name") or "").strip()
+        if not name or any(hm.get("name") == name for hm in heatmaps):
+            continue
+        heatmaps.append({
+            "name": name,
+            "ranges": [list(pair) for pair in (ann.get("ranges") or [])],
+            "metric": "mean_ratio",
+            "image": None,
+            "computed_ranges": None,
+        })
     return doc
 
 

@@ -14,6 +14,58 @@ REGION_BRUSH = (255, 200, 0, 50)
 REGION_HOVER = (255, 200, 0, 90)
 REGION_PEN = (255, 200, 0)
 
+ANNOTATION_COLORS = (
+    (255, 176, 0),
+    (72, 199, 116),
+    (176, 112, 255),
+    (255, 112, 72),
+    (64, 176, 224),
+    (224, 80, 144),
+    (160, 200, 64),
+    (96, 128, 255),
+)
+
+
+def annotation_color(index: int) -> tuple[int, int, int]:
+    return ANNOTATION_COLORS[index % len(ANNOTATION_COLORS)]
+
+
+def annotation_spans(doc: dict | None) -> list[tuple[int, int, tuple[int, int, int]]]:
+    """Inclusive frame ranges of the categories currently switched on."""
+    if not doc:
+        return []
+    shown = set((doc.get("display") or {}).get("shown_annotations") or [])
+    spans: list[tuple[int, int, tuple[int, int, int]]] = []
+    for index, category in enumerate(doc.get("heatmaps") or []):
+        if category.get("name") not in shown:
+            continue
+        color = annotation_color(index)
+        for item in category.get("ranges") or []:
+            try:
+                start, end = int(item[0]), int(item[1])
+            except (TypeError, ValueError, IndexError):
+                continue
+            if end < start:
+                start, end = end, start
+            spans.append((start, end, color))
+    return spans
+
+
+def fill_annotation_menu(menu: QtWidgets.QMenu, choices: list[tuple[str, bool]], on_toggle) -> None:
+    """Checkable category names. ``on_toggle(name, checked)`` fires only for user clicks."""
+    menu.clear()
+    if not choices:
+        empty = menu.addAction("No categories yet")
+        empty.setEnabled(False)
+        return
+    for name, checked in choices:
+        action = menu.addAction(name)
+        action.setCheckable(True)
+        action.blockSignals(True)
+        action.setChecked(checked)
+        action.blockSignals(False)
+        action.toggled.connect(lambda on, name=name: on_toggle(name, on))
+
 
 def apply_time_axis(plot: pg.PlotItem, fps: float | None, units: str) -> None:
     """Plot coordinates stay in frames; only the tick labels are rescaled."""
@@ -28,12 +80,24 @@ def apply_time_axis(plot: pg.PlotItem, fps: float | None, units: str) -> None:
 
 class TracePanel(QtWidgets.QWidget):
     sigFrameChanged = QtCore.Signal(int)
+    sigAnnotationToggled = QtCore.Signal(str, bool)
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.annotation_button = QtWidgets.QToolButton()
+        self.annotation_button.setText("Annotations")
+        self.annotation_button.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.annotation_menu = QtWidgets.QMenu(self.annotation_button)
+        self.annotation_button.setMenu(self.annotation_menu)
+        bar = QtWidgets.QHBoxLayout()
+        bar.setContentsMargins(4, 2, 4, 0)
+        bar.addWidget(self.annotation_button, 0, QtCore.Qt.AlignmentFlag.AlignLeft)
+        bar.addStretch(1)
+
         self.glw = pg.GraphicsLayoutWidget()
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
+        layout.addLayout(bar)
         layout.addWidget(self.glw)
 
         self.plots: dict[str, pg.PlotItem] = {}
@@ -77,22 +141,29 @@ class TracePanel(QtWidgets.QWidget):
         plot.setTitle(f"{label}: {name}")
         plot.enableAutoRange(axis="y")
 
-    def set_ranges(self, ranges: list | None) -> None:
-        """Show read-only frame ranges (e.g. those a heatmap was computed from) on both plots."""
+    def set_annotation_choices(self, choices: list[tuple[str, bool]]) -> None:
+        fill_annotation_menu(self.annotation_menu, choices, self.sigAnnotationToggled.emit)
+
+    def set_annotation_spans(self, spans: list[tuple[int, int, tuple[int, int, int]]] | None) -> None:
+        """Draw switched-on annotation ranges on both trace plots, one colour per category."""
         for plot, item in self._range_items:
             plot.removeItem(item)
         self._range_items = []
-        for start, end in ranges or []:
+        for start, end, color in spans or []:
             for plot in self.plots.values():
                 item = pg.LinearRegionItem(
                     values=(start, end),
                     movable=False,
-                    brush=pg.mkBrush(*REGION_BRUSH),
-                    pen=pg.mkPen(REGION_PEN),
+                    brush=pg.mkBrush(*color, 50),
+                    pen=pg.mkPen(color),
                 )
                 item.setZValue(-10)
                 plot.addItem(item, ignoreBounds=True)
                 self._range_items.append((plot, item))
+
+    def set_ranges(self, ranges: list | None) -> None:
+        """Show read-only frame ranges in the default annotation colour."""
+        self.set_annotation_spans([(int(start), int(end), REGION_PEN) for start, end in ranges or []])
 
     def set_time_axis(self, fps: float | None, units: str) -> None:
         for plot in self.plots.values():

@@ -32,7 +32,7 @@ class HeatmapEditor(QtWidgets.QWidget):
     def __init__(self, main: MainWindow):
         super().__init__(main, QtCore.Qt.WindowType.Window)
         self.main = main
-        self.setWindowTitle("Heatmaps")
+        self.setWindowTitle("Annotations")
         self.resize(1000, 520)
 
         self.category_list = QtWidgets.QListWidget()
@@ -193,10 +193,13 @@ class HeatmapEditor(QtWidgets.QWidget):
     def _refresh_status(self) -> None:
         hm = self.current()
         if hm is None:
-            self.status.setText("Create a category, add ranges, then compute.")
+            self.status.setText("Create a category and mark its frame ranges. Compute a heatmap only if you want a map.")
             return
         n_sel = len(hm["ranges"])
-        self.status.setText(f"<b>{hm['name']}</b>: {n_sel} range(s), heatmap {heatmap_state(hm)}")
+        self.status.setText(
+            f"<b>{hm['name']}</b>: {n_sel} range(s). "
+            f"The ranges are an annotation on their own; heatmap {heatmap_state(hm)}."
+        )
 
     # edits -------------------------------------------------------------------
     def _changed(self) -> None:

@@ -80,8 +80,33 @@ Opening rules:
 Schema stays **v1**; additions are optional keys: `stack.path`, `stack.relpath` (written on save), ROI `imported_from`.
 
 ### Parked / next
-- Trace-processing window (smoothing, bleach correction, ΔF/F, comparison of specific vs non-specific).
+- Further trace processing: smoothing, bleach correction, ΔF/F.
 - Possible pairing of specific ↔ non-specific ROIs, if the comparison needs it.
 - Polygon (click-to-place) and ellipse drawing tools; undo.
 - Registration / resampling when the reference image has a different size from the stack.
 - Export of traces (e.g. CSV / .mat).
+
+## Session 2026-09-28 — Trace processing window
+
+Opened from **Tools → Trace processing...**. Three tabs. Schema stays **v1**; `annotations` and the contents of `trace_processing` are optional and filled in on load.
+
+| ID | Agreement |
+|----|-----------|
+| C1 | **Raster.** One row per ROI, min–max scaled like suite2p's `tc_norm`. Sort: document order, specific then non-specific, or average-linkage within each kind. Click a row to select that ROI. |
+| C2 | **Similarity.** Pearson r of the raw traces (shape, not amplitude — no extra dependency such as scipy). Question answered: is the mean pairwise r inside the specific group higher than inside the non-specific group? p-values reassign ROIs to groups of the same sizes (every assignment when there are ≤ 20 000, otherwise 4000 random ones). Matrices are ordered by average-linkage on distance `1 − r`. |
+| C3 | **Annotations** are `{name, ranges}` on the document. Each range is one event; the onset is its first frame. Created in the Z-score tab (default name AirPuff) and shaded on the raster. |
+| C4 | **Z-score.** Baseline length and post-stim length, stored in frames, shown in the document's frames/seconds. A trial is kept only when the whole window is inside the recording and the baseline sample SD is non-zero. Per ROI: dotted trial Z-scores, thick mean, grey ± SEM across trials. One comparison plot: each ROI's trial average as a dotted line (red specific, blue non-specific), thick group means, grey ± SEM across ROIs. |
+| C5 | Settings remembered in `trace_processing`: `raster_sort`, `raster_lut`, `zscore` (`annotation`, `baseline_frames`, `post_frames`). |
+
+## Session 2026-09-28 — Annotations, clustering, Pearson tab
+
+Supersedes B5 and C1–C4 where they disagree. Schema stays **v1**.
+
+| ID | Agreement |
+|----|-----------|
+| D1 | Heatmap categories are the annotations. A category with ranges is an annotation even when no heatmap is computed. Older `annotations` lists are folded into `heatmaps` on load. The window title is Annotations. |
+| D2 | On/off is display only, stored in `display.shown_annotations`. The same checklist sits at the upper left of the main traces and on the raster. Each category has its own colour. Z-score still uses one selected category; onset is the first frame of each range. |
+| D3 | **Similarity** is one hierarchical matrix: Ružička + average, or Euclidean + Ward, both on per-trace min–max. The dendrogram is drawn beside the matrix, leaves lined up with the rows. Order is one tree of all ROIs, or specific then non-specific each with its own tree. The contrast index is the dotted line on the pooled tree (default 0.7 × max merge height); moving it recuts that tree, and every group is outlined, including single ROIs. The step of the control follows the height of the tree. The cut is inactive in the within-kind view. LUT dropdown colours the matrix. |
+| D4 | **Pearson** keeps the earlier comparison on its own tab: raw-trace pairwise r, permutation test, two matrices. |
+| D5 | Raster sort adds the same four trees (metric × pooled/within-kind) beside document order and kind order. |
+| D6 | Z-score no longer edits events. A Groups box lists Specific and Non-specific with every ROI checked; unchecked ids are stored so new ROIs stay checked. Baseline is labelled “Baseline (prior to event)”. Frames/seconds for baseline and post-stim are local to this tab and stored as frames. |

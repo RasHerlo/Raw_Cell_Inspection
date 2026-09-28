@@ -10,8 +10,9 @@ import tifffile
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 pg = pytest.importorskip("pyqtgraph")
-from PySide6 import QtWidgets  # noqa: E402
+from PySide6 import QtCore, QtWidgets  # noqa: E402
 
+from raw_cell_inspection.gui.main_window import dialog_start, remember_opened  # noqa: E402
 from raw_cell_inspection.store import KIND_NONSPECIFIC, KIND_SPECIFIC, load_document  # noqa: E402
 
 
@@ -75,18 +76,20 @@ def test_full_cycle(app, tmp_path):
     wait_until(app, lambda: win.doc["heatmaps"][0]["image"] is not None)
     assert win.doc["heatmaps"][0]["image"][9, 9] == pytest.approx(4.0)
     assert win.draw_source.currentData() == "heatmap:stim"
+    assert win.trace_panel._range_items == []
+    win.set_annotation_shown("stim", True)
+    assert len(win.trace_panel._range_items) == 2
 
     assert win.save()
     doc = load_document(tmp_path / "rec_rci.pkl")
     assert len(doc["rois"]) == 2 and doc["fps"] == 10.0
     assert doc["heatmaps"][0]["computed_ranges"] == [[20, 29]]
+    assert doc["display"]["shown_annotations"] == ["stim"]
 
-    # heatmap ranges are shown on both trace plots while the heatmap is the draw source
-    assert len(win.trace_panel._range_items) == 2
     assert win.draw_panel.path_label.toolTip() == str(path)
     assert win.stack_panel.path_label.toolTip() == str(path)
     win.draw_source.setCurrentIndex(win.draw_source.findData("mean"))
-    assert win.trace_panel._range_items == []
+    assert len(win.trace_panel._range_items) == 2
 
     # File > Open experiment, via the pickle
     win2 = MainWindow()
@@ -122,3 +125,92 @@ def test_full_cycle(app, tmp_path):
     for wdw in (win, win2, win3):
         wdw.dirty = False
         wdw.close()
+
+
+def test_trace_processing_window(app, tmp_path):
+    from raw_cell_inspection.gui.main_window import MainWindow
+
+    n, s = 80, 32
+    ramp = np.linspace(100, 180, n)
+    stack = np.broadcast_to(ramp[:, None, None], (n, s, s)).copy().astype(np.uint16)
+    stack[40:48, 8:12, 8:12] += 80
+    path = tmp_path / "rec.tif"
+    tifffile.imwrite(path, stack)
+
+    win = MainWindow()
+    win.show()
+    win.open_stack(str(path))
+    wait_until(app, lambda: win.doc is not None and win.doc["summary"] is not None)
+    win.keep_drawing.setChecked(True)
+    win.draw_specific_btn.setChecked(True)
+    win.draw_panel.sigLassoFinished.emit(square(10, 10, 2))
+    win.draw_panel.sigLassoFinished.emit(square(14, 18, 2))
+    win.draw_nonspecific_btn.setChecked(True)
+    win.draw_panel.sigLassoFinished.emit(square(24, 24, 2))
+    win.draw_panel.sigLassoFinished.emit(square(20, 26, 2))
+
+    win.open_trace_processing()
+    tw = win.trace_window
+    assert tw.isVisible()
+    assert win.trace_action.isEnabled()
+    win.doc["heatmaps"].append({
+        "name": "AirPuff",
+        "ranges": [[40, 42], [60, 62]],
+        "metric": "mean_ratio",
+        "image": None,
+        "computed_ranges": None,
+    })
+    win.set_annotation_shown("AirPuff", True)
+    tw.refresh()
+    assert tw.event_combo.currentData() == "AirPuff"
+    assert len(tw._raster_regions) == 2
+    assert tw.sort_combo.count() == 6
+    tw.sort_combo.setCurrentIndex(4)
+    app.processEvents()
+    assert len(tw._raster_rows) == 4
+    tw.tabs.setCurrentIndex(1)
+    app.processEvents()
+    assert "Ružička" in tw.cluster_text.text()
+    assert tw._tree_curves
+    assert tw.cut_spin.singleStep() < tw.cut_spin.maximum() / 20
+    tw.cut_spin.setValue(tw.cut_spin.maximum())
+    app.processEvents()
+    assert len(tw._cluster_view["clusters"]) == 1
+    assert len(tw._cluster_outlines) == 1
+    tw.cut_spin.setValue(0.0)
+    app.processEvents()
+    assert len(tw._cluster_view["clusters"]) > 1
+    assert len(tw._cluster_outlines) == len(tw._cluster_view["clusters"])
+    tw.tabs.setCurrentIndex(2)
+    app.processEvents()
+    assert "Pearson" in tw.similarity_text.text()
+    tw._baseline_frames = 10
+    tw._post_frames = 12
+    tw._configure_duration_spins()
+    tw._compute_zscore()
+    assert len(tw._roi_plots) == 4
+    assert all(entry["kept"] == 2 for entry in tw._roi_plots)
+    assert "AirPuff" in tw.z_status.text()
+    nonspecific = tw.roi_tree.topLevelItem(1)
+    nonspecific.child(1).setCheckState(0, QtCore.Qt.CheckState.Unchecked)
+    tw._compute_zscore()
+    assert len(tw._roi_plots) == 3
+    saved = win.doc["trace_processing"]["zscore"]
+    assert saved["annotation"] == "AirPuff"
+    assert saved["baseline_frames"] == 10 and saved["post_frames"] == 12
+    assert nonspecific.child(1).data(0, QtCore.Qt.ItemDataRole.UserRole) in saved["excluded_roi_ids"]
+    win.dirty = False
+    win.close()
+
+
+def test_open_dialog_starts_at_the_last_experiment(tmp_path):
+    experiment = tmp_path / "rec_rci.pkl"
+    stack = tmp_path / "rec.tif"
+    experiment.write_bytes(b"")
+    stack.write_bytes(b"")
+    settings = QtCore.QSettings(str(tmp_path / "settings.ini"), QtCore.QSettings.Format.IniFormat)
+    remember_opened(settings, experiment=experiment, stack=stack)
+    assert dialog_start(settings, "last_experiment", "last_dir") == str(experiment)
+    assert dialog_start(settings, "last_stack", "last_dir") == str(stack)
+    settings.setValue("last_experiment", str(tmp_path / "missing_rci.pkl"))
+    assert dialog_start(settings, "last_experiment", "last_dir") == os.path.join(str(tmp_path), "")

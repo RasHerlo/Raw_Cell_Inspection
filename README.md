@@ -9,8 +9,8 @@ Get `RawCellInspection.exe` from the [Releases page](https://github.com/RasHerlo
 ## Using it
 
 1. Open your data from the **File** menu:
-   - **Load stack...** (Ctrl+O): pick a `.tif` movie (frames × height × width, single channel). Its experiment file `<stack>_rci.pkl` next to the stack is loaded if it exists (all saved ROIs, traces, heatmaps and settings), otherwise it is created on the first save.
-   - **Open experiment...** (Ctrl+Shift+O): pick an experiment file (`*_rci.pkl`). Its stack is opened from the same folder (or where it was when last saved); if it can't be found you are asked to locate it, and the experiment stays connected to that pickle.
+   - **Load stack...** (Ctrl+O): pick a `.tif` movie (frames × height × width, single channel). Its experiment file `<stack>_rci.pkl` next to the stack is loaded if it exists (all saved ROIs, traces, heatmaps and settings), otherwise it is created on the first save. The dialog starts at the last stack you opened.
+   - **Open experiment...** (Ctrl+Shift+O): pick an experiment file (`*_rci.pkl`). The dialog starts with the last experiment file selected. Its stack is opened from the same folder (or where it was when last saved); if it can't be found you are asked to locate it, and the experiment stays connected to that pickle.
 
    The file path of what each view shows is printed under its title (hover to see it in full).
 2. **Draw view (left):** pick what to draw on in the dropdown:
@@ -24,10 +24,13 @@ Get `RawCellInspection.exe` from the [Releases page](https://github.com/RasHerlo
    **Load ROIs from pickle...** copies the ROI outlines (and their names and types) from another experiment's `*_rci.pkl`, e.g. to reuse the same ROIs on a new recording of the same field of view. Their masks and traces are taken from the current stack. If ROIs already exist you choose to add to or replace them; clashing names get the next free number.
 5. Click an ROI in either view (or in the list) to select it. The last selected specific ROI is plotted in the upper trace, the last selected non-specific ROI in the lower trace. In the draw view, drag the selected ROI's handles or body to reshape / move it; its trace updates immediately.
 6. Click or drag in the trace plots to move the frame cursor (it drives the stack view). Enter the **frame rate** to switch the x axis to seconds.
-7. **Tools → Heatmaps...** (Ctrl+H): create named categories, add frame ranges on the mean trace of the whole field of view (drag the shaded ranges or type start / end), then **Compute heatmap**. Each pixel is the mean signal inside the ranges divided by the mean signal in all other frames (unresponsive ≈ 1). While a heatmap is shown in the draw view, the ranges it was computed from are shaded yellow on both traces.
-8. **File → Save** (Ctrl+S) writes `<stack>_rci.pkl` next to the stack; the previous version is kept as `<stack>_rci.pkl.bak`.
-
-Trace processing will open in its own window in a later version.
+7. **Tools → Annotations...** (Ctrl+H): create named categories and add frame ranges on the mean trace of the whole field of view (drag the shaded ranges or type start / end). A category with ranges is an annotation on its own. **Compute heatmap** is optional: each pixel is the mean signal inside the ranges divided by the mean signal in all other frames (unresponsive ≈ 1). Turn categories on or off from the **Annotations** menu at the upper left of the trace plots; each checked category is shaded in its own colour. That switch is display only.
+8. **Tools → Trace processing...** (Ctrl+T):
+   - **Raster:** every ROI as a row, each trace scaled to its own min–max. Sort by document order, by kind, or by one of the four hierarchical trees (Ružička or Euclidean–Ward, pooled or within kind). Click a row to select that ROI. The same Annotations menu shades the checked categories.
+   - **Similarity:** one matrix of every ROI, with the hierarchical tree beside it. Method is Ružička + average, or Euclidean + Ward, both on min–max traces. Order is one tree of all ROIs, or specific then non-specific with a tree inside each kind. In the pooled view the contrast index is the dotted line on the tree; drag it to change how many groups are outlined on the matrix, including single ROIs. It is inactive in the within-kind view. A LUT dropdown colours the matrix.
+   - **Pearson:** mean pairwise Pearson correlation of the raw traces within specific ROIs and within non-specific ROIs, a permutation test of whether one group is tighter, and the two correlation matrices ordered by clustering.
+   - **Z-score:** pick one annotation as the event. Each range is one event and its first frame is the onset. Baseline (prior to the event) and post-stim length have their own frames/seconds switch. Groups lists every ROI, checked by default; untick some and compute again. Each included ROI shows its trials as dotted Z-scores and their mean ± SEM. A second plot overlays every ROI average — specific and non-specific in their own colours — with each group's mean ± SEM.
+9. **File → Save** (Ctrl+S) writes `<stack>_rci.pkl` next to the stack; the previous version is kept as `<stack>_rci.pkl.bak`.
 
 ## Development
 
@@ -53,8 +56,8 @@ The script removes Anaconda from `PATH` for the build; otherwise PyInstaller bun
 Push a version tag and GitHub Actions (`.github/workflows/release.yml`) runs the tests, builds the exe and attaches it to a GitHub Release:
 
 ```powershell
-git tag v0.2.0
-git push origin v0.2.0
+git tag v0.3.0
+git push origin v0.3.0
 ```
 
 Design decisions and the pickle schema are recorded in [DESIGN_LOG.md](DESIGN_LOG.md).
